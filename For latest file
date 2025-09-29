@@ -1,0 +1,211 @@
+from pptx import Presentation
+import os
+import re
+from collections import defaultdict
+from datetime import datetime
+
+# ---------------- CONFIG ---------------- #
+ROOT_FOLDER = r"C:\Users\SA1268\OneDrive - Lennox International, Inc\Documents\model\maany"
+
+SUBTOPICS = [
+    "Static Stacking",
+    "Fork Truck Transportation",
+    "Crane Transportation",
+    "Shipping and Strapping",
+    "Conclusion"
+]
+
+SUMMARY_KEYWORDS = ["summary", "fea-analysis summary", "final", "conclusion", "results"]
+
+METADATA_FIELDS = {
+    "litc contact": "LITC Contact",
+    "fea reviewer": "FEA Reviewer",
+    "project requestor": "Project Requestor",
+    "report no": "Report No.",
+    "report number": "Report No.",
+    "revision": "Report No.",
+    "rev": "Report No.",
+    "report date": "Report Date"
+}
+
+# ---------------- HELPERS ---------------- #
+def list_folders(folder_path):
+    return [f for f in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, f))]
+
+def list_pptx_files(folder_path):
+    return [f for f in os.listdir(folder_path) if f.lower().endswith(".pptx")]
+
+def extract_slide_text(slide):
+    text = ""
+    for shape in slide.shapes:
+        if hasattr(shape, "text"):
+            text += shape.text + "\n"
+    return text
+
+def classify_safety(lines):
+    combined = " ".join(lines).lower()
+    if "safe" in combined or "localized" in combined:
+        return "✅ Design is Safe"
+    elif "above the yield strength" in combined:
+        return "❌ Design is Not Safe"
+    return "⚠️ Design is Not Safe"
+
+def detect_summary_slides(prs):
+    return [
+        (i + 1, extract_slide_text(slide).strip())
+        for i, slide in enumerate(prs.slides)
+        if any(k in extract_slide_text(slide).lower() for k in SUMMARY_KEYWORDS)
+    ]
+
+def highlight_tank_terms(line):
+    return re.sub(r'(?i)(with(out)? tank)', "\033[91m\\1\033[0m", line)
+
+def process_single_summary(text):
+    summary = defaultdict(list)
+    current_topic = None
+    for line in text.splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        for heading, topic in {
+            "transportation load case": "Shipping and Strapping",
+            "fork lifting load case": "Fork Truck Transportation",
+            "crane lifting load case": "Crane Transportation",
+            "static stacking": "Static Stacking",
+            "conclusion": "Conclusion"
+        }.items():
+            if heading in clean.lower():
+                current_topic = topic
+                break
+        if current_topic:
+            summary[current_topic].append(highlight_tank_terms(clean))
+    return summary
+
+def process_multiple_summaries(slides):
+    summary = defaultdict(list)
+    for _, text in slides:
+        for heading, topic in {
+            "transportation load case": "Shipping and Strapping",
+            "fork lifting load case": "Fork Truck Transportation",
+            "crane lifting load case": "Crane Transportation",
+            "static stacking": "Static Stacking",
+            "conclusion": "Conclusion"
+        }.items():
+            if heading.split()[0] in text.lower():
+                summary[topic].extend(
+                    highlight_tank_terms(ln) for ln in text.splitlines()
+                )
+                break
+    return summary
+
+def extract_displacement_yield(text):
+    displacement, yield_strength = [], []
+    for line in text.split("\n"):
+        l = line.lower()
+        if 'displacement' in l:
+            match = re.search(r'[-+]?\d*\.\d+|\d+', line)
+            if match:
+                displacement.append(f"{match.group()} inches")
+        elif 'yield strength' in l:
+            match = re.search(r'[-+]?\d*\.\d+|\d+', line)
+            if match:
+                yield_strength.append(f"{match.group()} psi")
+    return displacement, yield_strength
+
+def extract_metadata(prs):
+    metadata, report_entries = {}, []
+    for slide in prs.slides:
+        text = extract_slide_text(slide)
+        lower = text.lower()
+
+        for key, label in METADATA_FIELDS.items():
+            match = re.search(rf"{key}[:\-]?\s*(.+)", lower)
+            if match and label not in metadata:
+                metadata[label] = match.group(1).strip().capitalize()
+
+        matches = re.findall(r'(Report|Revision|Rev)\s*[\-: ]?\s*(\d+)', text, re.IGNORECASE)
+        for typ, num in matches:
+            report_entries.append(f"{typ.capitalize()}-{num}")
+
+        if "Report Date" not in metadata:
+            date_match = re.search(
+                r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2})', text
+            )
+            if date_match:
+                raw = date_match.group(0)
+                for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d"):
+                    try:
+                        parsed = datetime.strptime(raw, fmt)
+                        metadata["Report Date"] = parsed.strftime("%d-%m-%Y")
+                        break
+                    except:
+                        continue
+
+    if report_entries:
+        metadata["Report No."] = ", ".join(report_entries)
+    return metadata
+
+# ---------------- MAIN ---------------- #
+if __name__ == "__main__":
+    folders = list_folders(ROOT_FOLDER)
+    print("📁 Available Folders:")
+    for i, f in enumerate(folders, 1):
+        print(f"{i}. {f}")
+
+    folder = folders[int(input("Select folder: ")) - 1]
+    files = list_pptx_files(os.path.join(ROOT_FOLDER, folder))
+    print("\n📂 Files:")
+    for i, f in enumerate(files, 1):
+        print(f"{i}. {f}")
+
+    file_path = os.path.join(ROOT_FOLDER, folder, files[int(input("Select file: ")) - 1])
+    prs = Presentation(file_path)
+
+    # Metadata
+    metadata = extract_metadata(prs)
+    print("\n📑 Metadata:")
+    for field in ["LITC Contact", "FEA Reviewer", "Project Requestor", "Report No.", "Report Date"]:
+        print(f"🔹 {field}: {metadata.get(field, 'Not found')}")
+
+    # Detect summaries
+    summary_slides = detect_summary_slides(prs)
+    if summary_slides:
+        if len(summary_slides) == 1:
+            print("\nDetected → File A")
+            summary_per_topic = process_single_summary(summary_slides[0][1])
+        else:
+            print("\nDetected → File C")
+            summary_per_topic = process_multiple_summaries(summary_slides)
+    else:
+        print("\nNo summary → Checking for B or D")
+        all_text = "\n".join(extract_slide_text(s) for s in prs.slides)
+        displacement, yield_strength = extract_displacement_yield(all_text)
+        if displacement or yield_strength:
+            print("Detected → File B")
+            for topic in SUBTOPICS[:-1]:
+                print(f"\n🔷 {topic.upper()}")
+                print(" 📈 Displacement:", ", ".join(displacement) if displacement else "None")
+                print(" 🧪 Yield Strength:", ", ".join(yield_strength) if yield_strength else "None")
+            summary_per_topic = {}
+        else:
+            print("Detected → File D (Only text available)")
+            for i, slide in enumerate(prs.slides, 1):
+                print(f"\nSlide {i}:")
+                print(extract_slide_text(slide))
+            summary_per_topic = {}
+
+    # Print Summary
+    if summary_per_topic:
+        print("\n📋 OVERALL SUMMARY:")
+        for topic in SUBTOPICS:
+            if topic in summary_per_topic:
+                print(f"\n🔶 {topic.upper()}")
+                for line in summary_per_topic[topic]:
+                    print(f" • {line}")
+                if topic != "Conclusion":
+                    print(f" 🔸 {classify_safety(summary_per_topic[topic])}")
+            else:
+                if topic != "Conclusion":
+                    print(f"\n🔶 {topic.upper()}")
+                    print(" • No summary found.")
+                    print(" 🔸 ⚠️ Cannot determine safety.")
