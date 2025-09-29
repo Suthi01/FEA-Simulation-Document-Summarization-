@@ -1,1 +1,185 @@
+from pptx import Presentation
+import os
+import re
+from collections import defaultdict
+
+# -----------------------------
+# 🔹 CONFIGURATION
+# -----------------------------
+ROOT_FOLDER = r"C:\Users\SA1268\OneDrive - Lennox International, Inc\Documents\model\maany"  # Change this to your root folder
+
+SUBTOPICS = [
+    "Static Stacking",
+    "Fork Truck Transportation",
+    "Crane Transportation",
+    "Shipping and Strapping"
+]
+
+# -----------------------------
+# 🔹 Helper Functions
+# -----------------------------
+def list_folders(folder_path):
+    return [name for name in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, name))]
+
+def list_pptx_files(folder_path):
+    return [file for file in os.listdir(folder_path) if file.lower().endswith(".pptx") and os.path.isfile(os.path.join(folder_path, file))]
+
+def extract_text_by_subtopic(pptx_path):
+    prs = Presentation(pptx_path)
+    current_subtopic = "Others"
+    subtopic_data = defaultdict(list)
+    all_slides_text = []
+
+    for slide in prs.slides:
+        slide_text = ""
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                slide_text += shape.text + "\n"
+        all_slides_text.append(slide_text.strip())
+
+        for topic in SUBTOPICS:
+            if topic.lower() in slide_text.lower():
+                current_subtopic = topic
+                break
+        subtopic_data[current_subtopic].append(slide_text.strip())
+
+    return subtopic_data, all_slides_text
+
+def extract_displacement_yield(text):
+    displacement = []
+    yield_strength = []
+    for line in text.split("\n"):
+        l = line.lower().strip()
+
+        # Extract displacement value
+        if 'displacement' in l:
+            match = re.search(r'[-+]?\d*\.\d+|\d+', line)
+            if match:
+                value = match.group()
+                displacement.append(f"{value} inches")
+
+        # Extract yield strength value
+        elif 'yield strength' in l:
+            match = re.search(r'[-+]?\d*\.\d+|\d+', line)
+            if match:
+                value = match.group()
+                yield_strength.append(f"{value} psi")
+
+    return displacement, yield_strength
+
+def extract_final_summary_by_subtopic(summary_slide_text, subtopics):
+    summary_per_topic = defaultdict(list)
+    current_topic = None
+    lines = "\n".join(summary_slide_text).splitlines()
+
+    for line in lines:
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+
+        for topic in subtopics:
+            if topic.lower() in clean_line.lower():
+                current_topic = topic
+                break
+        else:
+            if current_topic:
+                summary_per_topic[current_topic].append(clean_line)
+
+    return summary_per_topic
+
+def classify_safety(summary_lines):
+    combined = " ".join(summary_lines).lower()
+    if "safe" in combined or "localized" in combined:
+        return "✅ Design is Safe"
+    elif "above the yield strength" in combined:
+        return "❌ Design is Not Safe"
+    else:
+        return "⚠️ Design is Not Safe"
+
+# -----------------------------
+# 🔹 Step 1: Choose Folder
+# -----------------------------
+product_folders = list_folders(ROOT_FOLDER)
+print("📁 Available Product Folders:")
+for i, folder in enumerate(product_folders, 1):
+    print(f"{i}. {folder}")
+
+folder_index = int(input("🔍 Select folder number: ").strip()) - 1
+chosen_folder = product_folders[folder_index]
+full_folder_path = os.path.join(ROOT_FOLDER, chosen_folder)
+
+# -----------------------------
+# 🔹 Step 2: Choose File
+# -----------------------------
+pptx_files = list_pptx_files(full_folder_path)
+if not pptx_files:
+    print("⚠️ No PPTX files found in this folder.")
+    exit()
+
+print(f"\n📂 Files in '{chosen_folder}':")
+for i, file in enumerate(pptx_files, 1):
+    print(f"{i}. {file}")
+
+file_index = int(input("📄 Select file number: ").strip()) - 1
+selected_file = pptx_files[file_index]
+file_path = os.path.join(full_folder_path, selected_file)
+
+# -----------------------------
+# 🔹 Step 3: Process File
+# -----------------------------
+try:
+    subtopic_data, all_slides_text = extract_text_by_subtopic(file_path)
+except Exception as e:
+    print(f"⚠️ The file '{selected_file}' is empty or corrupted. Error: {e}")
+    exit()
+
+print("\n📌 Subtopic Data (Displacement & Yield Strength):\n")
+for subtopic in SUBTOPICS:
+    slides = subtopic_data.get(subtopic, [])
+    combined_text = "\n".join(slides)
+    displacement, yield_strength = extract_displacement_yield(combined_text)
+
+    print(f"🔷 {subtopic.upper()}")
+    print(" 📈 Displacement:")
+    if displacement:
+        for d in displacement:
+            print(f" • {d}")
+    else:
+        print(" • No displacement found.")
+
+    print(" 🧪 Yield Strength:")
+    if yield_strength:
+        for y in yield_strength:
+            print(f" • {y}")
+    else:
+        print(" • No yield strength found.")
+
+    print("-" * 50)
+
+# -----------------------------
+# 🔹 Step 4: Find Summary Slides
+# -----------------------------
+summary_slides_text = []
+for i, slide_text in enumerate(all_slides_text, start=1):
+    clean_text = re.sub(r'\s+', ' ', slide_text).lower()  # normalize spaces
+    if re.search(r'\bsummary\b', clean_text):  # matches 'summary' as a word
+        print(f"✅ Found summary on slide {i}")
+        summary_slides_text.append(slide_text)
+
+summary_per_topic = extract_final_summary_by_subtopic(summary_slides_text, SUBTOPICS)
+
+# -----------------------------
+# 🔹 Step 5: Print Final Summary + Safety
+# -----------------------------
+print("\n📋 SUMMARY:")
+for topic in SUBTOPICS:
+    print(f"\n🔶 {topic.upper()}")
+    if topic in summary_per_topic:
+        for line in summary_per_topic[topic]:
+            print(f" • {line}")
+        classification = classify_safety(summary_per_topic[topic])
+        print(f" 🔸 {classification}")
+    else:
+        print(" • No summary found.")
+        print(" 🔸 ⚠️ Cannot determine safety.")
 
